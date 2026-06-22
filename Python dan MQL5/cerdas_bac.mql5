@@ -1,0 +1,241 @@
+//+------------------------------------------------------------------+
+//|                                  QuantMartingale_Full_System.mq5 |
+//|                                  Copyright 2026, ProAlgo Trading |
+//+------------------------------------------------------------------+
+#include <Trade\Trade.mqh>
+#include <Trade\PositionInfo.mqh>
+
+//--- Input Parameters
+input group "=== Quant Server Settings ==="
+input string   InpApiBaseUrl     = "http://127.0.0.1:8000/api/v1/analyze/"; 
+
+input group "=== Trading Settings ==="
+input double   InpBaseLot        = 0.01;
+input double   InpLotMultiplier  = 2.0;
+input int      InpMaxLayers      = 6;
+input int      InpGridStep       = 300;      // 300 Poin untuk Emas (XAUUSD)
+
+input group "=== Profit & Safety ==="
+input double   InpBasketTarget   = 10.0;     
+input double   InpMinEquityPct   = 80.0;     
+
+//--- Global Variables
+CTrade         trade;
+CPositionInfo  m_position;
+ulong          MagicNumber       = 888000;
+
+double         g_mu              = 0.0;
+string         g_api_status      = "Menunggu sinkronisasi...";
+bool           g_isBacktesting   = false;
+
+//+------------------------------------------------------------------+
+int OnInit() {
+    trade.SetExpertMagicNumber(MagicNumber);
+    
+    // Deteksi otomatis apakah EA sedang diuji di Strategy Tester
+    g_isBacktesting = (bool)MQLInfoInteger(MQL_TESTER);
+    
+    if(g_isBacktesting) {
+        Print("MODE BACKTEST AKTIF: Menggunakan Native MQL5 Quant Engine.");
+        g_api_status = "Offline Backtest Mode 🔵";
+    }
+    
+    EventSetTimer(60); 
+    OnTimer(); 
+    return(INIT_SUCCEEDED);
+}
+
+void OnDeinit(const int reason) { 
+    EventKillTimer(); 
+    Comment(""); 
+}
+
+//+------------------------------------------------------------------+
+void OnTick() {
+    int totalBuy = 0, totalSell = 0;
+    double currentBasketProfit = 0;
+    double totalLots = 0;
+    
+    for(int i = PositionsTotal() - 1; i >= 0; i--) {
+        if(m_position.SelectByIndex(i) && m_position.Symbol() == _Symbol && m_position.Magic() == MagicNumber) {
+            currentBasketProfit += (m_position.Profit() + m_position.Swap() + m_position.Commission());
+            totalLots += m_position.Volume();
+            if(m_position.PositionType() == POSITION_TYPE_BUY) totalBuy++;
+            if(m_position.PositionType() == POSITION_TYPE_SELL) totalSell++;
+        }
+    }
+
+    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+    double drawdownPct = 0;
+    if(balance > 0) drawdownPct = ((balance - equity) / balance) * 100.0;
+
+    // Render Dashboard
+    string dashboard = "==================================\n";
+    dashboard += "    PRO-ALGO QUANT MARTINGALE     \n";
+    dashboard += "==================================\n\n";
+    dashboard += "API Status : " + g_api_status + "\n";
+    dashboard += StringFormat("Drift (μ)  : %.6f\n\n", g_mu);
+    dashboard += StringFormat("Active Buy : %d Layer(s)\n", totalBuy);
+    dashboard += StringFormat("Active Sell: %d Layer(s)\n", totalSell);
+    dashboard += StringFormat("Total Lots : %.2f\n", totalLots);
+    dashboard += StringFormat("Basket P/L : $%.2f / $%.2f\n", currentBasketProfit, InpBasketTarget);
+    dashboard += StringFormat("Drawdown   : %.2f%%\n", drawdownPct);
+    dashboard += "==================================";
+    Comment(dashboard);
+    
+    if((totalBuy > 0 || totalSell > 0) && currentBasketProfit >= InpBasketTarget) {
+        PositionCloseAll();
+    }
+    
+    // Khusus di Backtester, EventTimer kadang kurang responsif, kita panggil perhitungan native setiap ganti candle H1
+    if(g_isBacktesting) {
+        static datetime last_time = 0;
+        datetime current_time = iTime(_Symbol, PERIOD_H1, 0);
+        if(current_time != last_time) {
+            CalculateNativeGBM(g_mu);
+            ExecuteStrategy(g_mu);
+            last_time = current_time;
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+void OnTimer() {
+    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+    if(equity < (balance * (InpMinEquityPct / 100.0))) {
+        PositionCloseAll();
+        return;
+    }
+
+    // Jika berjalan di Live Chart, gunakan API Python
+    if(!g_isBacktesting) {
+        char post[], result[];
+        string headers, result_headers;
+        string final_url = InpApiBaseUrl + _Symbol; 
+        
+        int res = WebRequest("GET", final_url, headers, 15000, post, result, result_headers);
+        if(res == 200) {
+            g_mu = ExtractJson(CharArrayToString(result), "drift_mu");
+            g_api_status = "Connected 🟢";
+            ExecuteStrategy(g_mu);
+        } else {
+            g_api_status = StringFormat("Error HTTP %d 🔴", res);
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| MQL5 Native GBM Engine (Khusus Backtester)                       |
+//+------------------------------------------------------------------+
+void CalculateNativeGBM(double &out_mu) {
+    int bars = 720; // 1 Bulan data H1 (24 jam x 30 hari)
+    double close[];
+    ArraySetAsSeries(close, true);
+    
+    if(CopyClose(_Symbol, PERIOD_H1, 1, bars + 1, close) <= bars) return;
+
+    double sum_rt = 0;
+    double log_returns[];
+    ArrayResize(log_returns, bars);
+
+    // Hitung Log Returns: R = ln(P_t / P_t-1)
+    for(int i = 0; i < bars; i++) {
+        log_returns[i] = MathLog(close[i] / close[i+1]);
+        sum_rt += log_returns[i];
+    }
+
+    double mean_rt = sum_rt / bars;
+    double sum_var = 0;
+
+    for(int i = 0; i < bars; i++) {
+        sum_var += MathPow(log_returns[i] - mean_rt, 2);
+    }
+
+    double variance = sum_var / bars;
+    out_mu = mean_rt + (variance / 2.0); // Kalkulasi Ekspektasi Arah (Drift)
+}
+
+//+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
+//| Logika Eksekusi dan Martingale Grid                              |
+//+------------------------------------------------------------------+
+void ExecuteStrategy(double mu) {
+    double currentAsk = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+    double currentBid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+    
+    int countBuy = 0, countSell = 0;
+    
+    // Variabel baru untuk mencari lot terbesar dan harga paling ekstrem
+    double maxLotBuy = 0.0, maxLotSell = 0.0;
+    double lowestBuyPrice = DBL_MAX, highestSellPrice = 0.0;
+
+    // Deteksi posisi aktif
+    for(int i = PositionsTotal() - 1; i >= 0; i--) {
+        if(m_position.SelectByIndex(i) && m_position.Symbol() == _Symbol && m_position.Magic() == MagicNumber) {
+            
+            if(m_position.PositionType() == POSITION_TYPE_BUY) { 
+                countBuy++; 
+                // Catat lot terbesar yang sedang terbuka
+                if(m_position.Volume() > maxLotBuy) maxLotBuy = m_position.Volume();
+                // Catat harga Buy paling bawah (termurah)
+                if(m_position.PriceOpen() < lowestBuyPrice) lowestBuyPrice = m_position.PriceOpen(); 
+            }
+            if(m_position.PositionType() == POSITION_TYPE_SELL) { 
+                countSell++; 
+                // Catat lot terbesar yang sedang terbuka
+                if(m_position.Volume() > maxLotSell) maxLotSell = m_position.Volume();
+                // Catat harga Sell paling atas (termahal)
+                if(m_position.PriceOpen() > highestSellPrice) highestSellPrice = m_position.PriceOpen(); 
+            }
+        }
+    }
+
+    // Logic: Entry Awal
+    if(countBuy == 0 && countSell == 0) {
+        if(mu > 0.0001) trade.Buy(InpBaseLot, _Symbol, currentAsk, 0, 0, "Quant Buy");
+        else if(mu < -0.0001) trade.Sell(InpBaseLot, _Symbol, currentBid, 0, 0, "Quant Sell");
+    } 
+    // Logic: Martingale Buy
+    else if(countBuy > 0 && countBuy < InpMaxLayers) {
+        if(lowestBuyPrice - currentAsk >= InpGridStep * _Point) {
+            double nextLot = NormalizeDouble(maxLotBuy * InpLotMultiplier, 2);
+            trade.Buy(nextLot, _Symbol, currentAsk, 0, 0, "Martingale Buy");
+        }
+    }
+    // Logic: Martingale Sell
+    else if(countSell > 0 && countSell < InpMaxLayers) {
+        if(currentBid - highestSellPrice >= InpGridStep * _Point) {
+            double nextLot = NormalizeDouble(maxLotSell * InpLotMultiplier, 2);
+            trade.Sell(nextLot, _Symbol, currentBid, 0, 0, "Martingale Sell");
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+void PositionCloseAll() {
+    for(int i = PositionsTotal() - 1; i >= 0; i--) {
+        if(m_position.SelectByIndex(i) && m_position.Symbol() == _Symbol && m_position.Magic() == MagicNumber)
+            trade.PositionClose(m_position.Ticket());
+    }
+}
+
+double ExtractJson(string json, string key) {
+    string search = "\"" + key + "\":";
+    int start = StringFind(json, search);
+    if(start < 0) return 0.0;
+    start += StringLen(search);
+    int end_comma = StringFind(json, ",", start);
+    int end_bracket = StringFind(json, "}", start);
+    int final_end = -1;
+    if(end_comma > 0 && end_bracket > 0) final_end = MathMin(end_comma, end_bracket);
+    else if(end_comma > 0) final_end = end_comma;
+    else if(end_bracket > 0) final_end = end_bracket;
+    if(final_end > 0) {
+        string val = StringSubstr(json, start, final_end - start);
+        StringReplace(val, " ", "");
+        return StringToDouble(val);
+    }
+    return 0.0;
+}
