@@ -1,0 +1,58 @@
+Instalasi Python
+
+1. Unduh dan Install Python
+   - Kunjungi situs resmi Python di https://www.python.org/downloads/ dan unduh versi terbaru.
+   - Ikuti petunjuk instalasi, pastikan untuk mencentang opsi "Add Python to PATH" agar Python dapat diakses dari command line.
+
+2. Verifikasi Instalasi
+   - Buka Command Prompt (Windows) atau Terminal (Mac/Linux).
+    - Ketik `python --version` dan tekan Enter. Anda harus melihat versi Python yang telah diinstal.
+
+3. Install Library yang Diperlukan
+   - Untuk berkomunikasi dengan MQL5, Anda mungkin memerlukan library seperti `requests` untuk melakukan HTTP requests.
+   - Install library tersebut dengan menjalankan perintah berikut di Command Prompt atau Terminal:
+     ```
+     pip install requests
+     ```   
+4. Buat Script Python
+   - Buat file Python baru, misalnya `quant_engine.py`, dan tambahkan kode berikut untuk membuat API sederhana yang akan diakses oleh MQL5:
+     ```python
+     from flask import Flask, jsonify
+
+     app = Flask(__name__)
+
+     @app.route('/XAUUSD', methods=['GET'])
+     def get_drift_mu():
+         # Contoh data yang dikirim ke MQL5
+         data = {
+             'drift_mu': 0.05  # Nilai drift mu yang dihasilkan oleh model quant Anda
+         }
+         return jsonify(data)
+
+     if __name__ == '__main__':
+         app.run(host='0.0.0.0', port=8000)
+
+5. Jalankan Script Python
+   - Jalankan script Python dengan perintah berikut di Command Prompt atau Terminal:
+     ```
+     python quant_engine.py
+     ```
+    - Script ini akan menjalankan server Flask yang mendengarkan permintaan pada port 8000. MQL5 akan mengakses endpoint ini untuk mendapatkan data drift mu.
+
+
+// Langkah di Python dan vscode terminal
+
+pip install fastapi uvicorn numpy pandas yfinance
+
+
+py -m pip install --upgrade pip
+
+py -m pip install numpy pandas
+py -m pip install fastapi uvicorn
+py -m pip install yfinance
+
+py -c "import numpy; import pandas; import fastapi; import yfinance; print('Semua Pustaka Berhasil Dimuat!')"
+
+py main.py
+
+// Di MQL 5, ijinkan mengakses web pada tool > options > expert advisors > allow web requests for listed URL > tambahkan http://127.0.0.1:8000
