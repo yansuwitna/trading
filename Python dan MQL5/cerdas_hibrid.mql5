@@ -340,3 +340,12 @@ double ExtractJson(string json, string key) {
     
     return 0.0;
 }
+
+
+/* 
+
+Z digunakan untuk bolinger dalam mempercepat transaksi
+Trend untuk membaca ternd semakin besar maka semakin ketat dan transaksi lebih lambat
+Sistem ini menggunakan AI dalam membaca grafik jangka panjang untuk menentukan tren, sedangkan untuk entry menggunakan indikator jangka pendek (Bollinger Bands) agar bisa lebih cepat merespon perubahan harga.
+Akan terjadi penambahakan profit secara otomatis jika terjadi penambahan lot pada posisi yang sama, sehingga target profit bisa tercapai lebih cepat. Namun, pastikan untuk mengatur target profit dasar (InpBaseTarget) dengan bijak agar tidak terlalu agresif.
+*/
