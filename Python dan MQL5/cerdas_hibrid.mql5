@@ -7,7 +7,7 @@
 
 //--- Input Parameters
 input group "=== Quant Server Settings ==="
-input string   InpApiBaseUrl     = "http://127.0.0.1:8000/api/v1/analyze/"; 
+input string   InpApiBaseUrl     = "https://api-mt5.nanatech.id/api/v1/analyze/"; 
 input double Trend = 0.00001;
 
 input group "=== Trading Settings ==="
@@ -110,7 +110,7 @@ void OnTick() {
     dashboard += "API Python : " + g_api_status + "\n";
     dashboard += StringFormat("Drift (μ)  : %.8f", g_mu)+ "\n";
     dashboard += "Trend  :" + string(Trend)+ "\n";
-    dashboard += "Analisa Trend  :" + (g_mu > 0 ? "NAIK" : "TURUN" )+ "\n\n";
+    dashboard += "Analisa Trend  :" + (g_mu > Trend ? "NAIK" : (g_mu < (Trend * -1) ? "TURUN": "DATAR") )+ "\n\n";
     
     dashboard += "--- POSITION DATA ---\n";
     dashboard += StringFormat("Active Buy : %d Layer(s)\n", totalBuy);
@@ -152,12 +152,12 @@ void OnTick() {
 
 //+------------------------------------------------------------------+
 void OnTimer() {
-    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
-    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
-    if(equity < (balance * (InpMinEquityPct / 100.0))) {
-        PositionCloseAll();
-        return;
-    }
+    //double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+    //double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+    //if(equity < (balance * (InpMinEquityPct / 100.0))) {
+    //    PositionCloseAll();
+    //    return;
+    //}
 
     // Jika berjalan di Live Chart, gunakan API Python
     if(!g_isBacktesting) {
@@ -169,7 +169,7 @@ void OnTimer() {
         if(res == 200) {
             g_mu = ExtractJson(CharArrayToString(result), "drift_mu");
             g_api_status = "Connected 🟢";
-            ExecuteStrategy(g_mu);
+            //ExecuteStrategy(g_mu);
         } else {
             g_api_status = StringFormat("Error HTTP %d 🔴", res);
         }
@@ -180,7 +180,7 @@ void OnTimer() {
 //| MQL5 Native GBM Engine (Super Robust for Strategy Tester)        |
 //+------------------------------------------------------------------+
 void CalculateNativeGBM(double &out_mu) {
-    int target_bars = 168; // Target data
+    int target_bars = 200; // Target data
     double close[];
     ArraySetAsSeries(close, true);
 
@@ -243,47 +243,74 @@ void ExecuteStrategy(double mu) {
             }
         }
     }
-
-    // --- LOGIKA 1: FAST ENTRY DENGAN FILTER API PYTHON ---
-    if(countBuy == 0 && countSell == 0) {
-        
-        // 1. Tarik Data Grafik Jangka Pendek (M1 / M5)
+    
+    
+    // 1. Tarik Data Grafik Jangka Pendek (M1 / M5)
         double upper[], lower[], close[];
         ArraySetAsSeries(upper, true); ArraySetAsSeries(lower, true); ArraySetAsSeries(close, true);
         
         if(CopyBuffer(h_bb, 1, 0, 2, upper) <= 0) return;
         if(CopyBuffer(h_bb, 2, 0, 2, lower) <= 0) return;
-        CopyClose(_Symbol, PERIOD_CURRENT, 0, 2, close);
-
-        // 2. Terjemahkan Kompas dari Python (Ambang batas Drift)
+        CopyClose(_Symbol, PERIOD_M1, 0, 2, close);
+        
+    // 2. Terjemahkan Kompas dari Python (Ambang batas Drift)
         // Angka 0.00005 bisa disesuaikan. Semakin besar angkanya, filter tren semakin ketat.
         bool isGlobalUptrend   = (mu > Trend);  
         bool isGlobalDowntrend = (mu < (Trend * -1)); 
+    
+
+    // --- LOGIKA 1: FAST ENTRY DENGAN FILTER API PYTHON ---
+    if(countBuy == 0 && countSell == 0) {
+        
+        
+
+        
+        
+
+        // ===== TAMBAHKAN KODE INI =====
+        //static datetime last_print = 0;
+        //if(TimeCurrent() - last_print >= 60) { // Print setiap 1 menit agar tidak spam
+            
+        //    last_print = TimeCurrent();
+        //}
+        // =============================
 
         // 3. Eksekusi Taktis
         // BUY JIKA: Harga menyentuh batas bawah DAN Python bilang Tren Sedang Naik
         if(currentAsk <= lower[0] && isGlobalUptrend) {
             trade.Buy(InpBaseLot, _Symbol, currentAsk, 0, 0, "Hybrid Quant Buy");
+            PrintFormat("RADAR BUY -> Ask: %.3f | LowBB: %.3f || Bid: %.3f | UpBB: %.3f || Trend: %s", 
+                        currentAsk, lower[0], currentBid, upper[0], 
+                        (isGlobalUptrend ? "NAIK" : (isGlobalDowntrend ? "TURUN" : "DATAR")));
         }
         // SELL JIKA: Harga menyentuh batas atas DAN Python bilang Tren Sedang Turun
         else if(currentBid >= upper[0] && isGlobalDowntrend) {
             trade.Sell(InpBaseLot, _Symbol, currentBid, 0, 0, "Hybrid Quant Sell");
+            PrintFormat("RADAR SELL -> Ask: %.3f | LowBB: %.3f || Bid: %.3f | UpBB: %.3f || Trend: %s", 
+                        currentAsk, lower[0], currentBid, upper[0], 
+                        (isGlobalUptrend ? "NAIK" : (isGlobalDowntrend ? "TURUN" : "DATAR")));
         }
     } 
     
     // --- LOGIKA 2: MARTINGALE GRID RECOVERY ---
     // Martingale tetap berjalan murni menggunakan jarak poin tanpa peduli indikator/tren
     else if(countBuy > 0 && countBuy < InpMaxLayers) {
+      if(currentAsk <= lower[0] && isGlobalUptrend) {
         if(lowestBuyPrice - currentAsk >= InpGridStep * _Point) {
             double nextLot = NormalizeDouble(maxLotBuy * InpLotMultiplier, 2);
+            //Print(nextLot);
             trade.Buy(nextLot, _Symbol, currentAsk, 0, 0, "Martingale Buy");
         }
+      }
     }
     else if(countSell > 0 && countSell < InpMaxLayers) {
+      if(currentBid >= upper[0] && isGlobalDowntrend) {
         if(currentBid - highestSellPrice >= InpGridStep * _Point) {
             double nextLot = NormalizeDouble(maxLotSell * InpLotMultiplier, 2);
+            //Print(nextLot);
             trade.Sell(nextLot, _Symbol, currentBid, 0, 0, "Martingale Sell");
         }
+      }
     }
 }
 
@@ -293,6 +320,13 @@ void PositionCloseAll() {
         if(m_position.SelectByIndex(i) && m_position.Symbol() == _Symbol && m_position.Magic() == MagicNumber)
             trade.PositionClose(m_position.Ticket());
     }
+    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+    string pesan = "=== Tutup Semua API ===\n";
+         pesan += "Pair: " + _Symbol + "\n";
+         pesan += "Total Posisi: " + DoubleToString(balance, 2) + "\n";
+         
+    SendNotification(pesan);
+    Print(pesan);
 }
 
 //+------------------------------------------------------------------+
