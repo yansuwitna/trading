@@ -358,4 +358,13 @@ Jarak : 1000 BTC 50000
 Base TARGET : 10 USD
 Min Equity : 50% (Kill Switch)
 Z-Score Deviation : 1.0 (Semakin kecil, semakin sering transaksi berdasarkan Bollinger Bands)
+
+
+BTC :
+0.00002
+0.05
+10.000
+keuntungan 5
+saldo 50%
+z = 2
 */
