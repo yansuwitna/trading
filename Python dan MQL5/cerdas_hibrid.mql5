@@ -1,0 +1,342 @@
+//+------------------------------------------------------------------+
+//|                                  QuantMartingale_Full_System.mq5 |
+//|                                  Copyright 2026, ProAlgo Trading |
+//+------------------------------------------------------------------+
+#include <Trade\Trade.mqh>
+#include <Trade\PositionInfo.mqh>
+
+//--- Input Parameters
+input group "=== Quant Server Settings ==="
+input string   InpApiBaseUrl     = "http://127.0.0.1:8000/api/v1/analyze/"; 
+input double Trend = 0.00001;
+
+input group "=== Trading Settings ==="
+input double   InpBaseLot        = 0.01;
+input double   InpLotMultiplier  = 2.0;
+input int      InpMaxLayers      = 6;
+input int      InpGridStep       = 300;      // 300 Poin untuk Emas (XAUUSD)
+
+input group "=== Profit & Safety ==="
+input double   InpBaseTarget   = 10.0;     
+input double   InpMinEquityPct   = 50.0;    
+
+input group "=== Fast Entry (Micro-Reversion) ==="
+input int      InpFastPeriod     = 15;       // Periode rata-rata jangka pendek
+input double   InpFastDeviation  = 2.0;      // Batas Z-Score (Semakin kecil = semakin sering transaksi)
+
+int h_bb; // Handle untuk indikator Z-Score (Bollinger Bands) 
+
+//--- Global Variables
+CTrade         trade;
+CPositionInfo  m_position;
+ulong          MagicNumber       = 888000;
+
+double         g_mu              = 0.0;
+string         g_api_status      = "Menunggu sinkronisasi...";
+bool           g_isBacktesting   = false;
+
+//+------------------------------------------------------------------+
+int OnInit() {
+    trade.SetExpertMagicNumber(MagicNumber);
+    
+    // Deteksi otomatis apakah EA sedang diuji di Strategy Tester
+    g_isBacktesting = (bool)MQLInfoInteger(MQL_TESTER);
+    
+    if(g_isBacktesting) {
+        Print("MODE BACKTEST AKTIF: Menggunakan Native MQL5 Quant Engine.");
+        g_api_status = "Offline Backtest Mode 🔵";
+    }
+    
+    // Inisialisasi perhitungan matematika jangka pendek di Timeframe chart saat ini (M1/M5)
+    h_bb = iBands(_Symbol, PERIOD_CURRENT, InpFastPeriod, 0, InpFastDeviation, PRICE_CLOSE);
+    if(h_bb == INVALID_HANDLE) {
+        Print("Gagal memuat kalkulasi jangka pendek!");
+        return(INIT_FAILED);
+    }
+    
+    EventSetTimer(60); 
+    OnTimer(); 
+    return(INIT_SUCCEEDED);
+}
+
+void OnDeinit(const int reason) { 
+    EventKillTimer(); 
+    Comment(""); 
+}
+
+//+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
+//| Fungsi OnTick: Update Dashboard & Auto Dynamic Target            |
+//+------------------------------------------------------------------+
+void OnTick() {
+    int totalBuy = 0, totalSell = 0;
+    double currentBasketProfit = 0;
+    double totalLots = 0;
+    
+    // 1. Kalkulasi Data Posisi Aktif
+    for(int i = PositionsTotal() - 1; i >= 0; i--) {
+        if(m_position.SelectByIndex(i) && m_position.Symbol() == _Symbol && m_position.Magic() == MagicNumber) {
+            currentBasketProfit += (m_position.Profit() + m_position.Swap() + m_position.Commission());
+            totalLots += m_position.Volume();
+            
+            if(m_position.PositionType() == POSITION_TYPE_BUY) totalBuy++;
+            if(m_position.PositionType() == POSITION_TYPE_SELL) totalSell++;
+        }
+    }
+
+    // 2. Kalkulasi AUTO DYNAMIC TARGET (Berbasis Rasio Volume)
+    double currentDynamicTarget = 0.0;
+    int maxLayers = MathMax(totalBuy, totalSell);
+    
+    if(maxLayers > 0) {
+        // Rumus: (Total Lot saat ini / Lot Dasar) * Target Dasar
+        // Ditambah sedikit kompensasi pengali (1.2) agar profit lebih agresif di layer atas
+        double lotRatio = totalLots / InpBaseLot;
+        currentDynamicTarget = NormalizeDouble(lotRatio * InpBaseTarget * (maxLayers == 1 ? 1.0 : 1.2), 2);
+    }
+
+    // 3. Kalkulasi Ekuitas & Keamanan
+    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+    double drawdownPct = 0;
+    if(balance > 0) drawdownPct = ((balance - equity) / balance) * 100.0;
+
+    // 4. Render Dashboard Visual
+    string dashboard = "==================================\n";
+    dashboard += "    PRO-ALGO QUANT MARTINGALE     \n";
+    dashboard += "==================================\n\n";
+    
+    dashboard += "--- SYSTEM STATUS ---\n";
+    dashboard += "API Python : " + g_api_status + "\n";
+    dashboard += StringFormat("Drift (μ)  : %.8f", g_mu)+ "\n";
+    dashboard += "Trend  :" + string(Trend)+ "\n";
+    dashboard += "Analisa Trend  :" + (g_mu > 0 ? "NAIK" : "TURUN" )+ "\n\n";
+    
+    dashboard += "--- POSITION DATA ---\n";
+    dashboard += StringFormat("Active Buy : %d Layer(s)\n", totalBuy);
+    dashboard += StringFormat("Active Sell: %d Layer(s)\n", totalSell);
+    dashboard += StringFormat("Total Lots : %.2f\n", totalLots);
+    
+    // Menampilkan target otomatis yang dihitung secara matematis
+    dashboard += StringFormat("AUTO Target: $%.2f\n\n", currentDynamicTarget); 
+    
+    dashboard += "--- RISK MANAGEMENT ---\n";
+    dashboard += StringFormat("Basket P/L : $%.2f\n", currentBasketProfit);
+    dashboard += StringFormat("Drawdown   : %.2f%%\n", drawdownPct);
+    dashboard += StringFormat("Kill Switch: %.1f%% Equity\n", InpMinEquityPct);
+    dashboard += "==================================";
+
+    Comment(dashboard);
+    
+    // 5. Cek Tutup Keranjang secara Real-Time menggunakan Auto Target
+    if((totalBuy > 0 || totalSell > 0) && currentBasketProfit >= currentDynamicTarget) {
+        PositionCloseAll();
+        PrintFormat("✅ AUTO Target $%.2f Tercapai di Layer %d! Semua posisi dibersihkan.", currentDynamicTarget, maxLayers);
+    }
+    
+    // Khusus di Backtester: Pemicu Kalkulasi Native
+    if(g_isBacktesting) {
+        static datetime last_time = 0;
+        // Gunakan PERIOD_CURRENT agar trigger pasti menyala di tester M1/M5
+        datetime current_time = iTime(_Symbol, PERIOD_CURRENT, 0); 
+        
+        if(current_time != last_time) {
+            CalculateNativeGBM(g_mu);
+            last_time = current_time;
+        }
+    }
+    
+    // Panggil logika eksekusi EA Anda di sini
+    ExecuteStrategy(g_mu);
+}
+
+//+------------------------------------------------------------------+
+void OnTimer() {
+    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+    if(equity < (balance * (InpMinEquityPct / 100.0))) {
+        PositionCloseAll();
+        return;
+    }
+
+    // Jika berjalan di Live Chart, gunakan API Python
+    if(!g_isBacktesting) {
+        char post[], result[];
+        string headers, result_headers;
+        string final_url = InpApiBaseUrl + _Symbol; 
+        
+        int res = WebRequest("GET", final_url, headers, 15000, post, result, result_headers);
+        if(res == 200) {
+            g_mu = ExtractJson(CharArrayToString(result), "drift_mu");
+            g_api_status = "Connected 🟢";
+            ExecuteStrategy(g_mu);
+        } else {
+            g_api_status = StringFormat("Error HTTP %d 🔴", res);
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| MQL5 Native GBM Engine (Super Robust for Strategy Tester)        |
+//+------------------------------------------------------------------+
+void CalculateNativeGBM(double &out_mu) {
+    int target_bars = 168; // Target data
+    double close[];
+    ArraySetAsSeries(close, true);
+
+    // 1. Coba tarik data H1 (Mulai dari indeks 0)
+    int copied = CopyClose(_Symbol, PERIOD_H1, 0, target_bars, close);
+
+    // 2. SISTEM FALLBACK: Jika H1 kosong di Backtester, gunakan timeframe saat ini
+    if(copied <= 2) {
+        copied = CopyClose(_Symbol, PERIOD_CURRENT, 0, target_bars, close);
+        if(copied <= 2) return; // Jika tetap gagal, batalkan kalkulasi
+    }
+
+    double sum_rt = 0;
+    double log_returns[];
+    int valid_bars = copied - 1; // Kurangi 1 karena kita butuh nilai [i+1]
+    ArrayResize(log_returns, valid_bars);
+
+    // 3. Hitung Log Returns secara aman
+    for(int i = 0; i < valid_bars; i++) {
+        if(close[i+1] <= 0) { log_returns[i] = 0; continue; } // Cegah error pembagian nol
+        log_returns[i] = MathLog(close[i] / close[i+1]);
+        sum_rt += log_returns[i];
+    }
+
+    double mean_rt = sum_rt / valid_bars;
+    double sum_var = 0;
+
+    for(int i = 0; i < valid_bars; i++) {
+        sum_var += MathPow(log_returns[i] - mean_rt, 2);
+    }
+
+    double variance = sum_var / valid_bars;
+    out_mu = mean_rt + (variance / 2.0);
+}
+
+//+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
+//| Logika Eksekusi Hibrida (API Filter + Fast Frequency)            |
+//+------------------------------------------------------------------+
+void ExecuteStrategy(double mu) {
+    double currentAsk = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+    double currentBid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+    
+    int countBuy = 0, countSell = 0;
+    double maxLotBuy = 0.0, maxLotSell = 0.0;
+    double lowestBuyPrice = DBL_MAX, highestSellPrice = 0.0;
+
+    // Deteksi Posisi Aktif
+    for(int i = PositionsTotal() - 1; i >= 0; i--) {
+        if(m_position.SelectByIndex(i) && m_position.Symbol() == _Symbol && m_position.Magic() == MagicNumber) {
+            if(m_position.PositionType() == POSITION_TYPE_BUY) { 
+                countBuy++; 
+                if(m_position.Volume() > maxLotBuy) maxLotBuy = m_position.Volume();
+                if(m_position.PriceOpen() < lowestBuyPrice) lowestBuyPrice = m_position.PriceOpen(); 
+            }
+            if(m_position.PositionType() == POSITION_TYPE_SELL) { 
+                countSell++; 
+                if(m_position.Volume() > maxLotSell) maxLotSell = m_position.Volume();
+                if(m_position.PriceOpen() > highestSellPrice) highestSellPrice = m_position.PriceOpen(); 
+            }
+        }
+    }
+
+    // --- LOGIKA 1: FAST ENTRY DENGAN FILTER API PYTHON ---
+    if(countBuy == 0 && countSell == 0) {
+        
+        // 1. Tarik Data Grafik Jangka Pendek (M1 / M5)
+        double upper[], lower[], close[];
+        ArraySetAsSeries(upper, true); ArraySetAsSeries(lower, true); ArraySetAsSeries(close, true);
+        
+        if(CopyBuffer(h_bb, 1, 0, 2, upper) <= 0) return;
+        if(CopyBuffer(h_bb, 2, 0, 2, lower) <= 0) return;
+        CopyClose(_Symbol, PERIOD_CURRENT, 0, 2, close);
+
+        // 2. Terjemahkan Kompas dari Python (Ambang batas Drift)
+        // Angka 0.00005 bisa disesuaikan. Semakin besar angkanya, filter tren semakin ketat.
+        bool isGlobalUptrend   = (mu > Trend);  
+        bool isGlobalDowntrend = (mu < (Trend * -1)); 
+
+        // 3. Eksekusi Taktis
+        // BUY JIKA: Harga menyentuh batas bawah DAN Python bilang Tren Sedang Naik
+        if(currentAsk <= lower[0] && isGlobalUptrend) {
+            trade.Buy(InpBaseLot, _Symbol, currentAsk, 0, 0, "Hybrid Quant Buy");
+        }
+        // SELL JIKA: Harga menyentuh batas atas DAN Python bilang Tren Sedang Turun
+        else if(currentBid >= upper[0] && isGlobalDowntrend) {
+            trade.Sell(InpBaseLot, _Symbol, currentBid, 0, 0, "Hybrid Quant Sell");
+        }
+    } 
+    
+    // --- LOGIKA 2: MARTINGALE GRID RECOVERY ---
+    // Martingale tetap berjalan murni menggunakan jarak poin tanpa peduli indikator/tren
+    else if(countBuy > 0 && countBuy < InpMaxLayers) {
+        if(lowestBuyPrice - currentAsk >= InpGridStep * _Point) {
+            double nextLot = NormalizeDouble(maxLotBuy * InpLotMultiplier, 2);
+            trade.Buy(nextLot, _Symbol, currentAsk, 0, 0, "Martingale Buy");
+        }
+    }
+    else if(countSell > 0 && countSell < InpMaxLayers) {
+        if(currentBid - highestSellPrice >= InpGridStep * _Point) {
+            double nextLot = NormalizeDouble(maxLotSell * InpLotMultiplier, 2);
+            trade.Sell(nextLot, _Symbol, currentBid, 0, 0, "Martingale Sell");
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+void PositionCloseAll() {
+    for(int i = PositionsTotal() - 1; i >= 0; i--) {
+        if(m_position.SelectByIndex(i) && m_position.Symbol() == _Symbol && m_position.Magic() == MagicNumber)
+            trade.PositionClose(m_position.Ticket());
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Bulletproof JSON Parser                                          |
+//+------------------------------------------------------------------+
+double ExtractJson(string json, string key) {
+    // 1. Cari nama kunci (misal "drift_mu")
+    string search = "\"" + key + "\""; 
+    int start = StringFind(json, search);
+    
+    if(start < 0) {
+        Print("JSON Parser Error: Data '", key, "' tidak ditemukan dari Python!");
+        return 0.0;
+    }
+    
+    // 2. Maju melewati nama kunci dan cari titik dua (:)
+    start += StringLen(search);
+    int colon = StringFind(json, ":", start);
+    if(colon < 0) return 0.0;
+    
+    // 3. Posisi awal angka adalah setelah titik dua
+    start = colon + 1;
+    
+    // 4. Cari penutup data (Koma atau Kurung Kurawal)
+    int end_comma = StringFind(json, ",", start);
+    int end_bracket = StringFind(json, "}", start);
+    
+    int final_end = StringLen(json);
+    if(end_comma > 0 && end_bracket > 0) final_end = MathMin(end_comma, end_bracket);
+    else if(end_comma > 0) final_end = end_comma;
+    else if(end_bracket > 0) final_end = end_bracket;
+    
+    if(final_end > 0) {
+        // Ekstrak teks angka
+        string val = StringSubstr(json, start, final_end - start);
+        
+        // Bersihkan semua karakter yang bukan angka
+        StringReplace(val, " ", "");
+        StringReplace(val, "\n", "");
+        StringReplace(val, "\r", "");
+        StringReplace(val, "\"", "");
+        
+        return StringToDouble(val);
+    }
+    
+    return 0.0;
+}
