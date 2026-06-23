@@ -42,8 +42,8 @@ Instalasi Python
 
 // Langkah di Python dan vscode terminal
 
+// ============= Windows
 pip install fastapi uvicorn numpy pandas yfinance
-
 
 py -m pip install --upgrade pip
 
@@ -54,5 +54,48 @@ py -m pip install yfinance
 py -c "import numpy; import pandas; import fastapi; import yfinance; print('Semua Pustaka Berhasil Dimuat!')"
 
 py main.py
+
+// ============= Linux 
+
+python3 -m venv myenv
+source myenv/bin/activate
+python3 -m pip install --upgrade pip
+pip install fastapi uvicorn numpy pandas yfinance
+
+python3 main.py
+
+
+Membuat Service 
+sudo nano /etc/systemd/system/trading.service
+
+[Unit]
+Description=Aplikasi Python MyEnv Service
+After=network.target
+
+[Service]
+# User yang akan menjalankan service ini
+User=root
+# Direktori tempat aplikasi dan myenv berada
+WorkingDirectory=/root/trading
+
+# Path ke interpreter Python di dalam myenv dan path ke skrip utama
+ExecStart=/root/trading/myenv/bin/python /root/trading/main.py
+
+# Auto-restart jika aplikasi crash
+Restart=always
+RestartSec=3
+
+# Output log standar
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=myapp
+
+[Install]
+WantedBy=multi-user.target
+
+
+sudo systemctl daemon-reload
+sudo systemctl enable trading
+sudo systemctl start trading
 
 // Di MQL 5, ijinkan mengakses web pada tool > options > expert advisors > allow web requests for listed URL > tambahkan http://127.0.0.1:8000
