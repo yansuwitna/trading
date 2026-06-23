@@ -107,7 +107,7 @@ void OnTick()
    //Menghitung Keuntungan
    keuntungan = 0;
    JmlTransaksi = 0;
-   HitungJarakTransaksi = Jarak;
+   HitungJarakTransaksi = 0;
    LotTransaksi = Lot;
    
    for(int i = PositionsTotal() - 1; i >= 0; i--)
