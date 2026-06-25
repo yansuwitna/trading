@@ -12,6 +12,14 @@
 CTrade trade;
 
 //--- Input Parameters ---
+input group "--- Tampilan ---"
+input string MataUang = "Rp. ";
+input int JmlUang = 5000000;
+input string Keterangan = "Real Rupiah";
+input string MataUangPengali = "Rp. ";
+input int PengaliKeuntungan = 1;
+input bool AktifkanKeterangan = true;
+
 input group "--- Indikator Setting ---"
 input ENUM_TIMEFRAMES   Waktu    = PERIOD_CURRENT;    // Time Frame Indikator
 input int               RSI_P    = 14;                // RSI Period
@@ -81,12 +89,31 @@ int OnInit()
    JmlTransaksi = 0;
    LotAktif = Lot;
    KunciTransaksi = "";
-   HitungJarakTransaksi = int(Jarak);
+   HitungJarakTransaksi = 0;
    
    pipsFactor = (_Digits == 3 || _Digits == 5) ? 10.0 : 1.0;
+   
+   //Mengirim Informasi Profit Harian 
+   // Mengatur timer untuk berjalan setiap 3600 detik (1 jam)
+   EventSetTimer(3600);
+   
+   // Kirim info langsung saat EA pertama kali pasang
+   KirimNotifikasiProfit();
 
    return(INIT_SUCCEEDED);
 }
+
+void OnDeinit(const int reason)
+  {   
+   // Menghapus timer
+   EventKillTimer();
+  }
+  
+void OnTimer()
+  {
+   KirimNotifikasiProfit();
+  }
+
 
 
 //+------------------------------------------------------------------+
@@ -107,9 +134,12 @@ void OnTick()
    //Menghitung Keuntungan
    keuntungan = 0;
    JmlTransaksi = 0;
-   HitungJarakTransaksi = 0;
+   HitungJarakTransaksi = Jarak;
    LotTransaksi = Lot;
-   
+   HargaAwal= 0;
+   HargaTerakhir = 0;
+   KunciTransaksi = "";
+   HargaJarak = 0;
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
       if(PositionGetSymbol(i) == _Symbol)
@@ -117,12 +147,6 @@ void OnTick()
          keuntungan += PositionGetDouble(POSITION_PROFIT);
          JmlTransaksi++;
          LotTransaksi = LotTransaksi * Marti;
-         
-         if(PengaliJarak==true){
-            HitungJarakTransaksi = HitungJarakTransaksi + Jarak * JmlTransaksi ;
-         }else{
-            HitungJarakTransaksi = HitungJarakTransaksi + Jarak ;
-         }
          
          if(KunciTransaksi == ""){
             long position_type = PositionGetInteger(POSITION_TYPE);
@@ -141,25 +165,96 @@ void OnTick()
           if(i == 0){
             HargaAwal = PositionGetDouble(POSITION_PRICE_OPEN);
           }
-          
-          
       }
    }
    
+   if(PengaliJarak==true){
+      HitungJarakTransaksi =  Jarak * JmlTransaksi;
+   }else{
+      HitungJarakTransaksi = Jarak;
+   }
+   
+   
+   //Langsung Tutup Dengan Keuntungan
+   if(keuntungan >= MaksimalKeuntungan){
+      TutupSemua();
+      return;
+   }
+   
+   
    //Menutup Jika Untung 
    if(TypeTransaksi == "BUY"){
-      HargaJarak = tick.bid - HargaAwal ;
+      HargaJarak = (tick.bid - HargaAwal) / (_Point * pipsFactor);
       if(HargaJarak > 0 && keuntungan >= MaksimalKeuntungan){
          TutupSemua();
          return;
       }
    }else if(TypeTransaksi == "SELL"){
-      HargaJarak = HargaAwal - tick.ask;
+      HargaJarak = (HargaAwal - tick.ask) / (_Point * pipsFactor) ;
       if(HargaJarak > 0 && keuntungan >= MaksimalKeuntungan){
          TutupSemua();
          return;
       }
    }
+   
+   string Informasi = "";
+   if(AktifkanKeterangan==true){
+   //Informasi
+   Informasi = "=========================================\n"+
+                         Keterangan+"\n"+
+                        "=========================================\n"+
+                        "Simbol/Pair         : " + _Symbol + "\n"+
+                        "Magic Number        : " + IntegerToString(MagicNumber) + "\n"+
+                        "RSI                 : " + string(int(RSI_N[0])) + "\n"+
+                        "-----------------------------------------\n"+
+                        
+                        "MARTINGLER     : " + string(Marti) + "\n"+
+                        "LOT             : " + string(Lot) + "\n"+
+                        "LOT BERIKUTNYA       : " + string(LotTransaksi) + "\n"+
+                        "-----------------------------------------\n"+
+                        "MAKSIMAL KEUNTUNGAN       : " + FormatRibuan(MaksimalKeuntungan) + "\n"+
+                        "KEUNTUNGAN       : " + FormatRibuan(int(keuntungan)) + "\n"+
+                        "-----------------------------------------\n"+
+                        "ANALISA             : " + InfoAnalisa + "\n"+
+                        "TERKUNCI     : " + string(PengunciTransaksi) + "\n"+
+                        "JENIS TRANSAKSI     : " + KunciTransaksi + "\n"+
+                        "-----------------------------------------\n"+
+                        "BATAS TRANSAKSI     : " + string(MaksimalTransaksi) + "\n"+
+                        "JML TRANSAKSI       : " + string(JmlTransaksi) + "\n"+
+                        "SPREAD        : " + FormatRibuan(spreadPoints) + "\n"+
+                        "-----------------------------------------\n"+
+                        "AKTIFKAN PENGALI JARAK TRANSAKSI     : " + string(PengaliJarak) + "\n"+
+                        "JARAK TRANSAKSI        : " + FormatRibuan(int(Jarak)) + "\n"+
+                        "JARAK BUKA BARU        : " + FormatRibuan(int(HitungJarakTransaksi)) + "\n"+
+                        "-----------------------------------------\n"+
+                        "HARGA AWAL             : " + string(HargaAwal) + "\n"+
+                        "HARGA AKHIR             : " + string(HargaTerakhir) + "\n"+
+                        "JARAK HARGA AWAL                 : " + FormatRibuan(int(HargaJarak)) + "\n"+
+                        "JARAK AKHIR TRANSAKSI       : " + FormatRibuan(int(JarakTransaksi)) + "\n"+
+                        
+                        
+                        
+                        "=========================================";
+   
+   }else{
+   
+            Informasi = "=========================================\n"+
+                         Keterangan + "\n"+ 
+                        "=========================================\n"+
+                        "Deposit         : " + MataUang + FormatRibuan(JmlUang) + "\n"+
+                        "Saldo         : " + MataUang + FormatRibuan(int(AccountInfoDouble(ACCOUNT_BALANCE))) + "\n"+
+                        "Keuntungan         : " + MataUang + FormatRibuan(int(AccountInfoDouble(ACCOUNT_BALANCE))-JmlUang) + "\n"+
+                        "Pengali Keuntungan         : " + FormatRibuan(PengaliKeuntungan) + "\n"+
+                        "Keuntungan Nyata         : " + MataUangPengali + FormatRibuan((int(AccountInfoDouble(ACCOUNT_BALANCE))-JmlUang)*PengaliKeuntungan) + "\n"+
+                        "=========================================";
+   
+   }
+   
+   Comment(Informasi);
+   
+   
+   
+   
 
    //Analisa
    if(RSI_N[0] < RSI_B){
@@ -180,34 +275,23 @@ void OnTick()
   
    if(JmlTransaksi==0){
       LotAktif = Lot;
-      HargaTerakhir = 0;
-      JmlTransaksi = 0;
-      HitungJarakTransaksi = int(Jarak);
-      HargaAwal = 0;
       KunciTransaksi = TypeTransaksi;
       if(TypeTransaksi == "BUY"){
          trade.Buy(LotTransaksi, _Symbol, tick.ask, 0, 0,string(MagicNumber));
-         HitungJarakTransaksi = HitungJarakTransaksi + Jarak;
-         JmlTransaksi = 1;
-         HargaAwal = tick.ask;
-         HargaTerakhir  = tick.ask;
-     
       }else{
          trade.Sell(LotTransaksi, _Symbol, tick.bid, 0, 0,string(MagicNumber));
-         HitungJarakTransaksi = HitungJarakTransaksi + Jarak;
-         JmlTransaksi = 1;
-         HargaAwal = tick.bid;
-         HargaTerakhir = tick.bid;
+         
       }
       
    }else{
       if(PengunciTransaksi == false){
          KunciTransaksi = TypeTransaksi;
       }
+      
       //Proses Transaksi / Penutupan
       if(KunciTransaksi == "BUY"){
          JarakTransaksi = (MathAbs(tick.ask - HargaTerakhir) / (_Point * pipsFactor)) ;
-         if(JarakTransaksi >= (HitungJarakTransaksi + spreadPoints)){
+         if(JarakTransaksi >= (HitungJarakTransaksi)){
             if(keuntungan < 0){
                trade.Buy(NormalizeDouble(LotTransaksi,2), _Symbol, tick.ask, 0, 0, string(MagicNumber));
             }else{
@@ -220,7 +304,7 @@ void OnTick()
          }
       }else{
          JarakTransaksi = (MathAbs(tick.bid - HargaTerakhir) / (_Point * pipsFactor) );
-         if(JarakTransaksi >= (HitungJarakTransaksi + spreadPoints)){
+         if(JarakTransaksi >= (HitungJarakTransaksi)){
             if(keuntungan < 0){
                trade.Sell(NormalizeDouble(LotTransaksi,2), _Symbol, tick.bid, 0, 0,string(MagicNumber));
             }else{
@@ -237,37 +321,6 @@ void OnTick()
    
    
    
-
-
-   //Informasi
-   string Informasi = "=========================================\n"+
-                        "     ROBOTIK BUATAN SENDIRI REAL  \n"+
-                        "=========================================\n"+
-                        "Simbol/Pair         : " + _Symbol + "\n"+
-                        "Magic Number        : " + IntegerToString(MagicNumber) + "\n"+
-                        "RSI                 : " + string(int(RSI_N[0])) + "\n"+
-                        "-----------------------------------------\n"+
-                        "LOT             : " + string(Lot) + "\n"+
-                        "MARTINGLER     : " + string(Marti) + "\n"+
-                        
-                        "PENGALI JARAK TRANSAKSI     : " + string(PengaliJarak) + "\n"+
-                        "LOT BERIKUTNYA       : " + string(LotTransaksi) + "\n"+
-                        "MAKSIMAL KEUNTUNGAN       : " + string(MaksimalKeuntungan) + "\n"+
-                        "-----------------------------------------\n"+
-                        "ANALISA             : " + InfoAnalisa + "\n"+
-                        "TERKUNCI     : " + string(PengunciTransaksi) + "\n"+
-                        "TRANSAKSI     : " + KunciTransaksi + "\n"+
-                        "-----------------------------------------\n"+
-                        "JML TRANSAKSI       : " + string(JmlTransaksi) + "\n"+
-                        "MAXIMAL TRANSAKSI     : " + string(MaksimalTransaksi) + "\n"+
-                        "HARGA AWAL             : " + string(HargaAwal) + "\n"+
-                        "JARAK HARGA AWAL                 : " + string(NormalizeDouble(HargaJarak,2)) + "\n"+
-                        "SPREAD        : " + string(spreadPoints) + "\n"+
-                        "JARAK BUKA BARU        : " + string(int(HitungJarakTransaksi) + spreadPoints) + "\n"+
-                        "HARGA AKHIR             : " + string(HargaTerakhir) + "\n"+
-                        "JARAK AKHIR TRANSAKSI       : " + string(int(JarakTransaksi)) + "\n"+
-                        "=========================================";
-   Comment(Informasi);
 
 }
 
@@ -305,11 +358,13 @@ void TutupSemua()
    double saldo = AccountInfoDouble(ACCOUNT_BALANCE);
    
    //Kirim Pesan 
-   string pesan = "=== UPDATE TRANSAKSI REAL ===\n";
-         pesan += "Saldo: $" + DoubleToString(saldo, 2) + "\n";
-         pesan += "Pair: " + _Symbol + "\n";
-         pesan += "Total Posisi: " + IntegerToString(JmlTransaksi) + "\n";
-         pesan += "Keuntungan: $" + DoubleToString(keuntungan, 2) + "\n";
+   string pesan = Keterangan + _Symbol + "\n";
+         pesan += "Keuntungan: " + MataUang + FormatRibuan(int(saldo)-JmlUang) + "("+ MataUangPengali + FormatRibuan(int((int(saldo)-JmlUang)*PengaliKeuntungan)) +")" + "\n";
+         pesan += "Saldo : " + MataUang + FormatRibuan(int(saldo)) + "\n";
+         pesan += "Deposit : " + MataUang + FormatRibuan(JmlUang) + "\n";
+         pesan += "Masuk : " + MataUang + FormatRibuan(DoubleToString(keuntungan, 0)) + "("+ MataUangPengali + FormatRibuan(int(keuntungan*PengaliKeuntungan)) +")" + "\n";
+         pesan += "Jml Transaksi: " + IntegerToString(JmlTransaksi) + "\n";
+         
          
          
     SendNotification(pesan);
@@ -323,4 +378,81 @@ void TutupSemua()
    JmlTransaksi = 0;
    HitungJarakTransaksi = int(Jarak);
    HargaAwal = 0;
+}
+
+//Mengirim Informasi Profit Harian 
+//+------------------------------------------------------------------+
+//| Fungsi Utama untuk Menghitung & Mengirim Notifikasi              |
+//+------------------------------------------------------------------+
+void KirimNotifikasiProfit()
+  {
+   double profitHarian = AmbilProfitHarian();
+   string namaAkun = AccountInfoString(ACCOUNT_NAME);
+   long nomorAkun = AccountInfoInteger(ACCOUNT_LOGIN);
+   
+   // 1. Format pesan untuk HP
+   string pesan = StringFormat("=== LAPORAN PROFIT ===\n"+
+                               "Akun: %s (%d)\n"+
+                               "Waktu Server: %s\n"+
+                               "Profit Hari Ini: "+ MataUang +"%s (" + MataUangPengali + " %s)\n" +
+                               "Profit Berjalan: "+ MataUang +"%s (" + MataUangPengali + " %s)\n",
+                               namaAkun, nomorAkun,
+                               TimeToString(TimeCurrent(), TIME_DATE|TIME_MINUTES),
+                               FormatRibuan(DoubleToString(profitHarian, 0)),
+                               FormatRibuan(DoubleToString(profitHarian * PengaliKeuntungan, 0)),
+                               FormatRibuan(DoubleToString(keuntungan, 0)),
+                               FormatRibuan(DoubleToString(keuntungan * PengaliKeuntungan, 0)));
+   
+   // 2. Kirim ke HP (Layar chart tetap bersih)
+   SendNotification(pesan);
+  }
+
+//+------------------------------------------------------------------+
+//| Fungsi untuk mendapatkan total profit hari ini                   |
+//+------------------------------------------------------------------+
+double AmbilProfitHarian()
+  {
+   double totalProfit = 0.0;
+   datetime waktuMulai = StringToTime(TimeToString(TimeCurrent(), TIME_DATE));
+   datetime waktuSekarang = TimeCurrent();
+
+   if(HistorySelect(waktuMulai, waktuSekarang))
+     {
+      int totalTransaksi = HistoryDealsTotal();
+      for(int i = 0; i < totalTransaksi; i++)
+        {
+         ulong tiketTransaksi = HistoryDealGetTicket(i);
+         if(tiketTransaksi > 0)
+           {
+            double profit = HistoryDealGetDouble(tiketTransaksi, DEAL_PROFIT);
+            double komisi = HistoryDealGetDouble(tiketTransaksi, DEAL_COMMISSION);
+            double swap   = HistoryDealGetDouble(tiketTransaksi, DEAL_SWAP);
+            long   entry  = HistoryDealGetInteger(tiketTransaksi, DEAL_ENTRY);
+
+            if(entry == DEAL_ENTRY_OUT || entry == DEAL_ENTRY_OUT_BY)
+              {
+               totalProfit += (profit + komisi + swap);
+              }
+           }
+        }
+     }
+   return(NormalizeDouble(totalProfit, 2));
+  }
+  
+  string FormatRibuan(double angka)
+{
+   string temp = DoubleToString(angka, 0); // Ubah ke string tanpa desimal
+   int len = StringLen(temp);
+   string result = "";
+   int count = 0;
+
+   for(int i = len - 1; i >= 0; i--)
+   {
+      if(count > 0 && count % 3 == 0)
+         result = "." + result;
+      
+      result = StringSubstr(temp, i, 1) + result;
+      count++;
+   }
+   return result;
 }
